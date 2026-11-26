@@ -161,8 +161,9 @@ jobs:
       - resolve
     runs-on: ubuntu-latest
     permissions:
-      # write so the release run can push the snapshot seed bump commit
+      # write so the release run can push the seed branch and open its pull request
       contents: write
+      pull-requests: write
       packages: write
 
     steps:
@@ -202,18 +203,30 @@ jobs:
           JRELEASER_MAVENCENTRAL_USERNAME: "${{ secrets.MAVEN_CENTRAL_OSSRH_USERNAME }}"
           JRELEASER_MAVENCENTRAL_PASSWORD: "${{ secrets.MAVEN_CENTRAL_OSSRH_TOKEN }}"
 
-      - name: Advance the snapshot seed on main
+      - name: Open the snapshot seed bump
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # The released version is the tag, so main only needs the seed moved to the
-          # next patch. Nothing is tagged here.
-          git fetch origin main
-          git checkout -B main origin/main
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898263+github-actions[bot]@users.noreply.github.com'
-          sed -i "s/^baseVersion=.*/baseVersion=${{ needs.resolve.outputs.next }}/" gradle.properties
-          if git diff --quiet; then
-            echo "baseVersion is already ${{ needs.resolve.outputs.next }}; nothing to commit." >> "$GITHUB_STEP_SUMMARY"
+          # The released version is the tag, so main only needs the seed moved to the next
+          # patch. `main` refuses direct pushes, so the bump is proposed as a pull request.
+          version="${{ needs.resolve.outputs.version }}"
+          next="${{ needs.resolve.outputs.next }}"
+          branch="chore/bump-baseVersion-$next"
+          if [ -n "$(gh pr list --base main --head "$branch" --state open --json number --jq '.[0].number // empty')" ]; then
+            echo "An open pull request already proposes $next." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          git commit -am "chore: bump baseVersion to ${{ needs.resolve.outputs.next }} [skip ci]"
-          git push origin HEAD:main
+          git fetch origin main
+          git checkout -B "$branch" origin/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898263+github-actions[bot]@users.noreply.github.com'
+          sed -i "s/^baseVersion=.*/baseVersion=$next/" gradle.properties
+          if git diff --quiet; then
+            echo "baseVersion is already $next; nothing to propose." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -am "chore: bump baseVersion to $next [skip ci]"
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore: bump baseVersion to $next" \
+            --body "Released \`$version\` from \`v$version\`. This moves the snapshot seed to \`$next\` so new branches and PRs inherit it."
