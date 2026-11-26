@@ -54,7 +54,7 @@ flowchart TD
 Packages only; the Maven Central snapshot repository is deliberately left out so PR
 commits do not accumulate in Central.
 
-### `release` job (pushes to `main`)
+### `release` job (merged pull requests, pushes to `main`, `workflow_dispatch`)
 
 1. **Resolve version** — read `baseVersion`, validate it is `major.minor.patch`, compute
    the next patch, and skip everything if `v<base>` already exists.
@@ -68,6 +68,13 @@ commits do not accumulate in Central.
    or PR already builds the next number.
 
 Tag before bump, so the tag points at the release commit rather than the bump commit.
+
+The job fires on the `pull_request` `closed` event with `merged == true`, not only on
+`push`. GitHub's merge app does not reliably fire the `push` trigger — PR #121 merged to
+`main` produced a CodeQL run on the merge commit and no CI Pipeline run — so the closed
+event is the path that actually runs. `main`'s tip is fetched and checked out before the
+tag, so `v<base>` lands on the merge commit rather than the PR head. If both events fire,
+the existing-tag guard turns the second run into a no-op.
 
 ## Requirements
 
