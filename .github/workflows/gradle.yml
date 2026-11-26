@@ -106,7 +106,7 @@ jobs:
   # then bumps baseVersion so the next branch/PR already builds the next number.
   release:
     name: Release merge to main
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     needs:
       - unit-tests
       - e2e-tests
