@@ -20,9 +20,9 @@ def commit_id = getCheckedOutGitCommitHash()
 def pr_number = System.getenv('PR_NUMBER')
 def release_version = System.getenv('RELEASE_VERSION')
 
-// baseVersion is the release line in gradle.properties. CI sets exactly one of
-// PR_NUMBER / RELEASE_VERSION: pull requests build an identifiable snapshot,
-// merged commits publish the clean version Maven Central requires.
+// RELEASE_VERSION is the semver tag CI is releasing; baseVersion in
+// gradle.properties only seeds snapshots. CI sets exactly one of
+// PR_NUMBER / RELEASE_VERSION, so a build is either a snapshot or a release.
 version = release_version
     ? release_version
     : (pr_number ? "${baseVersion}-pr${pr_number}-${commit_id}-SNAPSHOT"

@@ -4,10 +4,14 @@ on:
   pull_request:
     branches:
       - main
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
   push:
     branches:
       - main
+    # Release trigger. Action filters cannot express digit classes, so the glob
+    # catches every v-tag and the release job re-checks the exact semver shape.
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
@@ -73,7 +77,7 @@ jobs:
   # Pull requests publish an identifiable snapshot: <base>-pr<N>-<commit>-SNAPSHOT.
   snapshot:
     name: Publish PR snapshot
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    if: github.event_name == 'pull_request'
     needs:
       - unit-tests
       - e2e-tests
@@ -102,17 +106,51 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # A merge to main publishes baseVersion as a real release, tags that commit,
-  # then bumps baseVersion so the next branch/PR already builds the next number.
+  # A semver tag is the release trigger: pushing v1.2.3 publishes 1.2.3. CI no
+  # longer tags or bumps anything, so a release is a deliberate act by whoever is
+  # allowed to create tags (see RELEASE.md).
+  resolve:
+    name: Check the release tag
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.semver.outputs.version }}
+      allowed: ${{ steps.author.outputs.allowed }}
+
+    steps:
+      - name: Match the tag against semver
+        id: semver
+        run: |
+          if echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag '${GITHUB_REF_NAME}' is not vMAJOR.MINOR.PATCH; nothing is published." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check who pushed the tag
+        id: author
+        run: |
+          # Tag protection rules are the primary gate; this backstops a tag that
+          # gets created by someone who cannot release.
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)
+          echo "${GITHUB_ACTOR} pushed ${GITHUB_REF_NAME} with ${permission} access." >> "$GITHUB_STEP_SUMMARY"
+          case "${permission}" in
+            admin|write) echo "allowed=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "allowed=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
   release:
-    name: Release merge to main
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    name: Publish release tag
+    if: needs.resolve.outputs.version != '' && needs.resolve.outputs.allowed == 'true'
     needs:
       - unit-tests
       - e2e-tests
+      - resolve
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
 
     steps:
@@ -141,48 +179,13 @@ jobs:
           echo "${{secrets.MAVEN_CENTRAL_GPG_PASSPHRASE}}" | gpg --batch --yes --passphrase-fd 0 --import ~/.gradle/secring.gpg
           gpg --keyserver hkps://keys.openpgp.org --send-key 3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092
 
-      - name: Resolve version
-        id: version
-        run: |
-          base=$(sed -n 's/^baseVersion=\([^ ]*\).*/\1/p' gradle.properties)
-          IFS=. read -r major minor patch <<< "$base"
-          if [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
-            echo "gradle.properties baseVersion is not major.minor.patch, got '${base}'" >&2
-            exit 1
-          fi
-          next="${major}.${minor}.$((patch + 1))"
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-          echo "next=$next" >> "$GITHUB_OUTPUT"
-          if git ls-remote --tags origin "refs/tags/v${base}" | grep -q .; then
-            echo "v${base} is already released; skipping publish, tag, and bump."
-            echo "new=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "new=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build and publish release
-        if: steps.version.outputs.new == 'true'
         run: ./gradlew build publish jreleaserDeploy
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.base }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JRELEASER_GPG_KEYNAME: "3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092"
           JRELEASER_GPG_PASSPHRASE: "${{ secrets.MAVEN_CENTRAL_GPG_PASSPHRASE }}"
           JRELEASER_MAVENCENTRAL_USERNAME: "${{ secrets.MAVEN_CENTRAL_OSSRH_USERNAME }}"
           JRELEASER_MAVENCENTRAL_PASSWORD: "${{ secrets.MAVEN_CENTRAL_OSSRH_TOKEN }}"
-
-      - name: Tag the release commit and bump base version
-        if: steps.version.outputs.new == 'true'
-        run: |
-          # A merge commit created by GitHub's merge app does not reliably fire the
-          # push trigger, so resolve main's tip instead of trusting HEAD.
-          git fetch origin main
-          git checkout -B main origin/main
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898263+github-actions[bot]@users.noreply.github.com'
-          git tag -a "v${{ steps.version.outputs.base }}" -m "release ${{ steps.version.outputs.base }}"
-          git push origin "refs/tags/v${{ steps.version.outputs.base }}"
-          sed -i "s/^baseVersion=.*/baseVersion=${{ steps.version.outputs.next }}/" gradle.properties
-          git commit -am "chore: bump baseVersion to ${{ steps.version.outputs.next }} [skip ci]"
-          git push origin HEAD:main

@@ -1,29 +1,24 @@
 # Release process
 
-Published coordinates are `id.veridian:signify:<version>`. The version is not
-hardcoded in `build.gradle` any more: it is derived from one release line that CI
-owns.
+Published coordinates are `id.veridian:signify:<version>`, and `<version>` is the release
+tag. A release happens when someone pushes a semver tag; merging to `main` no longer
+publishes anything.
 
 ## Where the version comes from
 
-`gradle.properties`:
-
-```properties
-baseVersion=0.1.2
-```
-
-That single value is the version the next merge to `main` will publish, and it is the
-base PR snapshots inherit. `build.gradle` resolves the effective version:
+CI passes the tag to Gradle as `RELEASE_VERSION` with the leading `v` stripped, so pushing
+`v0.1.3` publishes `0.1.3`. `baseVersion` in `gradle.properties` is only the seed for
+snapshot builds now — nothing bumps it automatically any more.
 
 | Condition | Effective version | Example |
 | --- | --- | --- |
-| `RELEASE_VERSION` set | exactly that value | `0.1.2` |
+| `RELEASE_VERSION` set (tag push) | exactly that value | `0.1.3` |
 | `PR_NUMBER` set | `baseVersion-pr<N>-<commit>-SNAPSHOT` | `0.1.2-pr7-378fa88-SNAPSHOT` |
 | neither (local/dev) | `baseVersion-<commit>-SNAPSHOT` | `0.1.2-378fa88-SNAPSHOT` |
 
-`<commit>` is the abbreviated HEAD commit hash from the `org.ajoberstar.grgit` plugin.
-CI sets exactly one of the two variables, so a build is either a snapshot or a release —
-never both.
+`<commit>` is the abbreviated HEAD commit hash from the `org.ajoberstar.grgit` plugin. CI
+sets exactly one of the two variables, so a build is either a snapshot or a release — never
+both.
 
 Check what a build would publish:
 
@@ -31,17 +26,27 @@ Check what a build would publish:
 ./gradlew -q properties | grep '^version:'
 ```
 
-## Pipeline
+## Releasing
 
-`.github/workflows/gradle.yml` runs `unit-tests` and `e2e-tests` for every push and PR,
-then branches:
+```bash
+git tag -a v0.1.3 -m "release 0.1.3"
+git push origin refs/tags/v0.1.3
+```
+
+The tag points at the commit that gets published, so create it on `main` after the merge you
+want to ship. Only `vMAJOR.MINOR.PATCH` tags release: the trigger glob is `v*` (Action
+filters cannot express digit classes), and the `resolve` job re-checks the exact shape, so
+`v0.1.3-rc1`, `v1`, or `version-3` run CI without publishing.
+
+## Pipeline
 
 ```mermaid
 flowchart TD
-  PR["PR: base-prN-sha-SNAPSHOT published to GitHub Packages"] -->|merge to main| R["publish + jreleaserDeploy as clean release"]
-  R --> T["git tag v<base> on the merge commit"]
-  T --> B["commit: baseVersion bumped one patch, pushed to main"]
-  B -->|next branch and PR inherits| PR
+  PR["PR: baseVersion-prN-sha-SNAPSHOT to GitHub Packages"] --> M["merge to main: tests only, no publish"]
+  M --> T["push vMAJOR.MINOR.PATCH"]
+  T --> C["unit-tests + e2e-tests on the tagged commit"]
+  C --> R["resolve: semver shape + who pushed the tag"]
+  R --> P["publish + jreleaserDeploy as the tag version"]
 ```
 
 ### `snapshot` job (pull requests)
@@ -50,64 +55,77 @@ flowchart TD
 ./gradlew build publishMavenJavaPublicationToGitHubPackagesRepository
 ```
 
-`PR_NUMBER` is passed from `github.event.pull_request.number`. Snapshots go to GitHub
-Packages only; the Maven Central snapshot repository is deliberately left out so PR
-commits do not accumulate in Central.
+Snapshots go to GitHub Packages only; the Maven Central snapshot repository is deliberately
+left out so PR commits do not accumulate in Central.
 
-### `release` job (merged pull requests, pushes to `main`, `workflow_dispatch`)
+### `resolve` job (tag pushes)
 
-1. **Resolve version** — read `baseVersion`, validate it is `major.minor.patch`, compute
-   the next patch, and skip everything if `v<base>` already exists.
-2. **Publish** — `./gradlew build publish jreleaserDeploy` with `RELEASE_VERSION=<base>`.
-   Artifacts are staged in `build/staging-deploy`, signed, and pushed to GitHub Packages
-   plus Maven Central through JReleaser.
-3. **Tag** — annotated tag `v<base>` on the commit that produced the release, pushed to
-   the remote.
-4. **Bump** — `baseVersion` incremented by one patch, committed as
-   `chore: bump baseVersion to <next> [skip ci]` and pushed to `main`, so the next branch
-   or PR already builds the next number.
+1. **Semver** — `GITHUB_REF_NAME` must match `^v[0-9]+\.[0-9]+\.[0-9]+$`; otherwise nothing
+   is published and the run says so in the job summary.
+2. **Author** — `gh api repos/<repo>/collaborators/<actor>/permission` must come back `write`
+   or `admin`. This is the CI backstop for the tag ruleset below: a tag created by someone
+   who cannot release stops here.
+3. The release job runs only when both pass, and publishes
+   `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser.
 
-Tag before bump, so the tag points at the release commit rather than the bump commit.
+No tag is created and no version is bumped by CI: the tag already exists, and the version is
+the tag.
 
-The job fires on the `pull_request` `closed` event with `merged == true`, not only on
-`push`. GitHub's merge app does not reliably fire the `push` trigger — PR #121 merged to
-`main` produced a CodeQL run on the merge commit and no CI Pipeline run — so the closed
-event is the path that actually runs. `main`'s tip is fetched and checked out before the
-tag, so `v<base>` lands on the merge commit rather than the PR head. If both events fire,
-the existing-tag guard turns the second run into a no-op.
+## Protecting tag creation
+
+Workflow permissions cannot stop a tag from being created, so the gate is repository settings
+plus the CI check above.
+
+| Control | What it does | Where |
+| --- | --- | --- |
+| Tag ruleset (the real gate) | Blocks tag creation and deletion for everyone except the bypass list — add Admin and Maintain, or a named team. Applies to tags created through Releases too. | Settings → Rules → Rulesets → New ruleset → New tag ruleset, target `v*` |
+| Semver name pattern | Rejects tags that are not `v<major>.<minor>.<patch>` at creation time, so a bad tag never reaches CI | Same ruleset, "Restrict tag names" → must match regex `^v[0-9]+\.[0-9]+\.[0-9]+$` |
+| `main` protection | Tags should point at reviewed commits; branch protection keeps `main` itself protected. A ruleset cannot say "tags may only point at `main`", so keep the convention that release tags are created on `main` | Settings → Rules → rulesets targeting `main` |
+| CI author check | Backstop when the ruleset is bypassed, e.g. an integration that creates tags | `resolve` job, `Check who pushed the tag` |
+| Role reality | Read-only collaborators and outside contributors cannot push tags to this repository at all; tags pushed to a fork do not run this workflow | — |
+
+Ruleset JSON for import, equivalent to the two settings above:
+
+```json
+{
+  "name": "Release tags",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "exclude": [], "include": ["v*"] } },
+  "rules": [
+    {
+      "type": "tag_name_pattern",
+      "parameters": {
+        "name": "semver release tag",
+        "operator": "regex",
+        "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+        "description": "release tags must be vMAJOR.MINOR.PATCH"
+      }
+    },
+    { "type": "creation" },
+    { "type": "deletion" }
+  ]
+}
+```
+
+Then add the bypass actors in the UI (roles, teams, or apps) — `bypass_actors` is part of the
+ruleset form, not the import file.
 
 ## Requirements
 
-- `GITHUB_TOKEN` must have `contents: write` on the `release` job (set in the job's
-  `permissions`) — needed to push the tag and the bump commit. Branch protection that
-  forbids bot pushes or requires PRs will fail that step.
-- The bump commit carries `[skip ci]`. GitHub Actions also does not re-trigger workflows
-  from commits or tags pushed by `GITHUB_TOKEN`, so the release loop cannot recurse.
 - Secrets used by the release job: `MAVEN_CENTRAL_GPG_KEY_BASE64`,
   `MAVEN_CENTRAL_GPG_PASSPHRASE`, `MAVEN_CENTRAL_OSSRH_USERNAME`,
   `MAVEN_CENTRAL_OSSRH_TOKEN`, signing key `3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092`.
-- Maven Central rejects snapshot versions, so a release must publish a clean `baseVersion`
-  (JReleaser runs with `applyMavenCentralRules = true`).
-
-## Manual release
-
-To publish a specific version outside CI:
-
-```bash
-RELEASE_VERSION=0.2.0 ./gradlew build publish jreleaserDeploy
-git tag -a v0.2.0 -m "release 0.2.0"
-git push origin refs/tags/v0.2.0
-```
-
-Then update `baseVersion` in `gradle.properties` by hand and commit it, otherwise the next
-merge will re-release the same number.
+- Maven Central rejects snapshot versions, so a release must publish a clean version
+  (JReleaser runs with `applyMavenCentralRules = true`), which the semver check guarantees.
+- `GITHUB_TOKEN` needs `contents: read` and `packages: write` on the release job; it no longer
+  pushes commits or tags.
 
 ## Notes
 
-- Every merge to `main` produces a release and a tag, including documentation-only merges;
-  add `paths-ignore` to the workflow if that noise matters.
-- The bump is patch-only. Major and minor bumps are manual edits to `gradle.properties`.
-- Publishing the same version twice is not possible on either registry; the existing-tag
-  guard in the `release` job is what makes re-runs safe.
-- `artifactId` is pinned to `signify` in `publish-common.gradle`; renaming it is a
-  publication change, not a version change.
+- Re-running a tag that was already published fails at `jreleaserDeploy` — neither registry
+  accepts a duplicate version — so a release cannot be silently overwritten.
+- Major and minor lines start by choosing the number to tag; `baseVersion` is advanced by hand
+  only when you want the snapshot seed to move.
+- `artifactId` is pinned to `signify` in `publish-common.gradle`; renaming it is a publication
+  change, not a version change.
