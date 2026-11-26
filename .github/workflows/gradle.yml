@@ -144,7 +144,6 @@ jobs:
   release:
     name: Publish release tag
     if: needs.resolve.outputs.version != '' && needs.resolve.outputs.allowed == 'true'
-    environment: release
     needs:
       - unit-tests
       - e2e-tests
