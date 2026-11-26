@@ -88,6 +88,12 @@ if (!name.equalsIgnoreCase("components")) {
                         url = 'https://central.sonatype.com/api/v1/publisher'
                         applyMavenCentralRules = true
                         stagingRepository('build/staging-deploy')
+                        // The 1.19.0 Gradle DSL has no skipPublicationCheck; cap the state
+                        // transition poll instead. Central publishes asynchronously and can take
+                        // an undefined amount of time, so check once and let the pipeline pass on
+                        // acceptance — JReleaser warns on giving up rather than failing.
+                        retryDelay = 1
+                        maxRetries = 1
                     }
                 }
             }
