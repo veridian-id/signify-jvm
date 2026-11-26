@@ -53,7 +53,7 @@ flowchart TD
   T --> C["unit-tests + e2e-tests on the tagged commit"]
   C --> R["resolve: semver shape + who created the tag"]
   R --> P["publish + jreleaserDeploy as the tag version"]
-  P --> B["commit: baseVersion advanced to the next patch on main"]
+  P --> B["pull request: baseVersion advanced to the next patch"]
   B -->|next branch and PR inherits| PR
 ```
 
@@ -78,11 +78,14 @@ left out so PR commits do not accumulate in Central.
 ### `release` job (tag events that pass both checks)
 
 1. Publishes `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser.
-2. Commits `chore: bump baseVersion to <next patch> [skip ci]` on `main`, so new branches and
-   PRs inherit it. The step exits without a commit when `main` is already at that number.
+2. Pushes `chore/bump-baseVersion-<next patch>` and opens a pull request titled
+   `chore: bump baseVersion to <next patch>`; merging it moves the seed. `main` refuses direct
+   pushes — its ruleset requires a pull request — so this is a PR, not a push. The commit
+   carries `[skip ci]`, so the PR has no checks to wait for, and the step exits without a commit
+   when `main` is already at that number.
 
-CI never creates a tag — the tag already exists and is the version. The commit only moves the
-snapshot seed.
+CI never creates a tag — the tag already exists and is the version. The pull request only moves
+the snapshot seed.
 
 ## Protecting tag creation
 
@@ -131,9 +134,9 @@ ruleset form, not the import file.
   `MAVEN_CENTRAL_OSSRH_TOKEN`, signing key `3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092`.
 - Maven Central rejects snapshot versions, so a release must publish a clean version
   (JReleaser runs with `applyMavenCentralRules = true`), which the semver check guarantees.
-- `GITHUB_TOKEN` needs `packages: write` and `contents: write` on the release job, the second
-  for the seed bump commit. Branch protection that forbids the bot pushing to `main`, or that
-  requires every change to arrive as a pull request, fails that step.
+- `GITHUB_TOKEN` needs `packages: write`, `contents: write` and `pull-requests: write` on the
+  release job: publish, push the seed branch, open its pull request. `gh` reads `GH_TOKEN` rather
+  than `GITHUB_TOKEN`, so the steps that call it set `GH_TOKEN: ${{ github.token }}`.
 
 ## Notes
 
