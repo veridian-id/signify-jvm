@@ -175,6 +175,10 @@ jobs:
       - name: Tag the release commit and bump base version
         if: steps.version.outputs.new == 'true'
         run: |
+          # A merge commit created by GitHub's merge app does not reliably fire the
+          # push trigger, so resolve main's tip instead of trusting HEAD.
+          git fetch origin main
+          git checkout -B main origin/main
           git config user.name 'github-actions[bot]'
           git config user.email '41898263+github-actions[bot]@users.noreply.github.com'
           git tag -a "v${{ steps.version.outputs.base }}" -m "release ${{ steps.version.outputs.base }}"
