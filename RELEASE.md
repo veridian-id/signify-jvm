@@ -65,9 +65,8 @@ left out so PR commits do not accumulate in Central.
 2. **Author** — `gh api repos/<repo>/collaborators/<actor>/permission` must come back `write`
    or `admin`. This is the CI backstop for the tag ruleset below: a tag created by someone
    who cannot release stops here.
-3. The release job runs only when both pass, and its steps publish
-   `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser. The job runs
-   in the `release` environment, so approvals can be required there.
+3. The release job runs only when both pass, and publishes
+   `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser.
 
 No tag is created and no version is bumped by CI: the tag already exists, and the version is
 the tag.
@@ -82,7 +81,6 @@ plus the CI check above.
 | Tag ruleset (the real gate) | Blocks tag creation and deletion for everyone except the bypass list — add Admin and Maintain, or a named team. Applies to tags created through Releases too. | Settings → Rules → Rulesets → New ruleset → New tag ruleset, target `v*` |
 | Semver name pattern | Rejects tags that are not `v<major>.<minor>.<patch>` at creation time, so a bad tag never reaches CI | Same ruleset, "Restrict tag names" → must match regex `^v[0-9]+\.[0-9]+\.[0-9]+$` |
 | `main` protection | Tags should point at reviewed commits; branch protection keeps `main` itself protected. A ruleset cannot say "tags may only point at `main`", so keep the convention that release tags are created on `main` | Settings → Rules → rulesets targeting `main` |
-| `release` environment | Adds a human approval step before anything is published, independent of who created the tag | Settings → Environments → `release` → required reviewers |
 | CI author check | Backstop when the ruleset is bypassed, e.g. an integration that creates tags | `resolve` job, `Check who pushed the tag` |
 | Role reality | Read-only collaborators and outside contributors cannot push tags to this repository at all; tags pushed to a fork do not run this workflow | — |
 
@@ -117,9 +115,7 @@ ruleset form, not the import file.
 
 - Secrets used by the release job: `MAVEN_CENTRAL_GPG_KEY_BASE64`,
   `MAVEN_CENTRAL_GPG_PASSPHRASE`, `MAVEN_CENTRAL_OSSRH_USERNAME`,
-  `MAVEN_CENTRAL_OSSRH_TOKEN`, signing key `3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092`. Keep
-  them repository-scoped or move them onto the `release` environment so only approved runs can
-  read them.
+  `MAVEN_CENTRAL_OSSRH_TOKEN`, signing key `3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092`.
 - Maven Central rejects snapshot versions, so a release must publish a clean version
   (JReleaser runs with `applyMavenCentralRules = true`), which the semver check guarantees.
 - `GITHUB_TOKEN` needs `contents: read` and `packages: write` on the release job; it no longer
