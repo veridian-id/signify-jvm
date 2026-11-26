@@ -12,10 +12,15 @@ on:
     # catches every v-tag and the release job re-checks the exact semver shape.
     tags:
       - 'v*'
+  # A tag pushed over Git fires `push`; a tag created on the server (Releases page,
+  # `gh release create`, the refs API) fires `create` instead. Both are release triggers,
+  # and `create` also fires for branch creation, so the jobs gate on the tag ref.
+  create:
   workflow_dispatch:
 
 jobs:
   unit-tests:
+    if: github.event_name != 'create' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
     steps:
@@ -44,6 +49,7 @@ jobs:
           path: build/reports/allure-report/allureReport
 
   e2e-tests:
+    if: github.event_name != 'create' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
     steps:
@@ -111,7 +117,7 @@ jobs:
   # next branch and PR already build the next number.
   resolve:
     name: Check the release tag
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name == 'push' || github.event_name == 'create') && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -124,22 +130,22 @@ jobs:
       - name: Match the tag against semver
         id: semver
         run: |
-          if echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            version="${GITHUB_REF_NAME#v}"
-            IFS=. read -r major minor patch <<< "$version"
-            echo "version=$version" >> "$GITHUB_OUTPUT"
+          tag="${GITHUB_REF#refs/tags/}"
+          if echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            IFS=. read -r major minor patch <<< "${tag#v}"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
             echo "next=${major}.${minor}.$((patch + 1))" >> "$GITHUB_OUTPUT"
           else
-            echo "Tag '${GITHUB_REF_NAME}' is not vMAJOR.MINOR.PATCH; nothing is published." >> "$GITHUB_STEP_SUMMARY"
+            echo "Tag '$tag' is not vMAJOR.MINOR.PATCH; nothing is published." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Check who pushed the tag
+      - name: Check who created the tag
         id: author
         run: |
           # Tag protection rules are the primary gate; this backstops a tag that
           # gets created by someone who cannot release.
           permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)
-          echo "${GITHUB_ACTOR} pushed ${GITHUB_REF_NAME} with ${permission} access." >> "$GITHUB_STEP_SUMMARY"
+          echo "${GITHUB_ACTOR} created ${GITHUB_REF#refs/tags/} with ${permission} access." >> "$GITHUB_STEP_SUMMARY"
           case "${permission}" in
             admin|write) echo "allowed=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "allowed=false" >> "$GITHUB_OUTPUT" ;;
