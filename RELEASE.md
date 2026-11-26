@@ -142,6 +142,10 @@ ruleset form, not the import file.
 
 - Re-running a published tag fails at `jreleaserDeploy` — neither registry accepts a duplicate
   version — so a release cannot be overwritten and a failed re-run leaves the seed alone.
+- The release job does not wait for Central to finish publishing. `jreleaserDeploy` checks the
+  deployment state once (`retryDelay = 1`, `maxRetries = 1`; the 1.19.0 Gradle DSL has no
+  `skipPublicationCheck`), warns when the deployment is still in progress, and the pipeline
+  passes. Anything Central rejects afterwards shows up on the Central portal, not in CI.
 - The bump is patch-only. Major and minor lines start by choosing the number to tag; the seed
   follows on the next successful release run.
 - `artifactId` is pinned to `signify` in `publish-common.gradle`; renaming it is a publication
