@@ -140,10 +140,12 @@ jobs:
 
       - name: Check who created the tag
         id: author
+        env:
+          GH_TOKEN: ${{ github.token }}        # gh reads GH_TOKEN, not GITHUB_TOKEN
         run: |
           # Tag protection rules are the primary gate; this backstops a tag that
           # gets created by someone who cannot release.
-          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission) || permission=none
           echo "${GITHUB_ACTOR} created ${GITHUB_REF#refs/tags/} with ${permission} access." >> "$GITHUB_STEP_SUMMARY"
           case "${permission}" in
             admin|write) echo "allowed=true" >> "$GITHUB_OUTPUT" ;;
