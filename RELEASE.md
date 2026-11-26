@@ -35,20 +35,21 @@ git push origin refs/tags/v0.1.3
 ```
 
 The tag points at the commit that gets published, so create it on `main` after the merge you
-want to ship. Only `vMAJOR.MINOR.PATCH` tags release: the trigger glob is `v*` (Action
-filters cannot express digit classes), and the `resolve` job re-checks the exact shape, so
+want to ship. Only `vMAJOR.MINOR.PATCH` tags release, which the `resolve` job checks, so
 `v0.1.3-rc1`, `v1`, or `version-3` run CI without publishing.
 
-Both paths trigger it: pushing a tag over Git fires `push`, and creating one on the server —
-the Releases page, `gh release create`, the `git/refs` API — fires `create`. `create` fires for
-branch creation too, so the jobs only run for it when the ref is a `v*` tag.
+The trigger is `create`, which a tag ref fires whether it was pushed over Git or created on the
+server (Releases page, `gh release create`, the `git/refs` API). `push` is left for `main` only:
+moving an existing tag is the one case `create` never sees, and a moved tag cannot republish the
+version anyway, so recreate rather than move. `create` fires for branch creation too, so the jobs
+only run for it on a `v*` tag ref.
 
 ## Pipeline
 
 ```mermaid
 flowchart TD
   PR["PR: baseVersion-prN-sha-SNAPSHOT to GitHub Packages"] --> M["merge to main: tests only, no publish"]
-  M --> T["vMAJOR.MINOR.PATCH tag, pushed over Git or created on the server"]
+  M --> T["vMAJOR.MINOR.PATCH tag, created by git push or on the server"]
   T --> C["unit-tests + e2e-tests on the tagged commit"]
   C --> R["resolve: semver shape + who created the tag"]
   R --> P["publish + jreleaserDeploy as the tag version"]
