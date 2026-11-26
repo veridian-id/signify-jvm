@@ -4,7 +4,7 @@ on:
   pull_request:
     branches:
       - main
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
   push:
     branches:
       - main
@@ -70,14 +70,50 @@ jobs:
           name: allure-e2e-test-report
           path: build/reports/allure-report/allureReport
 
-  publish-to-pkg-repos:
-    permissions:
-      contents: read
-      packages: write
-    runs-on: ubuntu-latest
+  # Pull requests publish an identifiable snapshot: <base>-pr<N>-<commit>-SNAPSHOT.
+  snapshot:
+    name: Publish PR snapshot
+    if: github.event_name == 'pull_request'
     needs:
       - unit-tests
       - e2e-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Build and publish snapshot
+        run: ./gradlew build publishMavenJavaPublicationToGitHubPackagesRepository
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # A merge to main publishes baseVersion as a real release, tags that commit,
+  # then bumps baseVersion so the next branch/PR already builds the next number.
+  release:
+    name: Release merge to main
+    if: github.event_name != 'pull_request'
+    needs:
+      - unit-tests
+      - e2e-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
 
     steps:
       - name: Checkout code
@@ -96,6 +132,7 @@ jobs:
         run: |
           which gpg
           gpg --version
+
       - name: Decode GPG Key
         run: |
           mkdir -p ~/.gradle/
@@ -104,22 +141,44 @@ jobs:
           echo "${{secrets.MAVEN_CENTRAL_GPG_PASSPHRASE}}" | gpg --batch --yes --passphrase-fd 0 --import ~/.gradle/secring.gpg
           gpg --keyserver hkps://keys.openpgp.org --send-key 3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092
 
-      - name: Build package
-        run: ./gradlew build
-
-      - name: Publish package to GitHub Packages
-        run: ./gradlew publishMavenJavaPublicationToGitHubPackagesRepository
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish package Maven Central
+      - name: Resolve version
+        id: version
         run: |
-          ./gradlew publish jreleaserDeploy
+          base=$(sed -n 's/^baseVersion=\([^ ]*\).*/\1/p' gradle.properties)
+          IFS=. read -r major minor patch <<< "$base"
+          if [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
+            echo "gradle.properties baseVersion is not major.minor.patch, got '${base}'" >&2
+            exit 1
+          fi
+          next="${major}.${minor}.$((patch + 1))"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/v${base}" | grep -q .; then
+            echo "v${base} is already released; skipping publish, tag, and bump."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and publish release
+        if: steps.version.outputs.new == 'true'
+        run: ./gradlew build publish jreleaserDeploy
         env:
+          RELEASE_VERSION: ${{ steps.version.outputs.base }}
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JRELEASER_GPG_KEYNAME: "3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092"
           JRELEASER_GPG_PASSPHRASE: "${{ secrets.MAVEN_CENTRAL_GPG_PASSPHRASE }}"
           JRELEASER_MAVENCENTRAL_USERNAME: "${{ secrets.MAVEN_CENTRAL_OSSRH_USERNAME }}"
           JRELEASER_MAVENCENTRAL_PASSWORD: "${{ secrets.MAVEN_CENTRAL_OSSRH_TOKEN }}"
+
+      - name: Tag the release commit and bump base version
+        if: steps.version.outputs.new == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898263+github-actions[bot]@users.noreply.github.com'
+          git tag -a "v${{ steps.version.outputs.base }}" -m "release ${{ steps.version.outputs.base }}"
+          git push origin "refs/tags/v${{ steps.version.outputs.base }}"
+          sed -i "s/^baseVersion=.*/baseVersion=${{ steps.version.outputs.next }}/" gradle.properties
+          git commit -am "chore: bump baseVersion to ${{ steps.version.outputs.next }} [skip ci]"
+          git push origin HEAD:main

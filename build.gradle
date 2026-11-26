@@ -15,12 +15,18 @@ repositories {
 }
 
 group = 'id.veridian'
-version = '0.1.2-SNAPSHOT'
 
 def commit_id = getCheckedOutGitCommitHash()
-if (project.version.endsWith("-SNAPSHOT")) {
-    version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
-}
+def pr_number = System.getenv('PR_NUMBER')
+def release_version = System.getenv('RELEASE_VERSION')
+
+// baseVersion is the release line in gradle.properties. CI sets exactly one of
+// PR_NUMBER / RELEASE_VERSION: pull requests build an identifiable snapshot,
+// merged commits publish the clean version Maven Central requires.
+version = release_version
+    ? release_version
+    : (pr_number ? "${baseVersion}-pr${pr_number}-${commit_id}-SNAPSHOT"
+                  : "${baseVersion}-${commit_id}-SNAPSHOT")
 
 def getCheckedOutGitCommitHash() {
     grgit.head().abbreviatedId
