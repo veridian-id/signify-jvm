@@ -7,8 +7,9 @@ publishes anything.
 ## Where the version comes from
 
 CI passes the tag to Gradle as `RELEASE_VERSION` with the leading `v` stripped, so pushing
-`v0.1.3` publishes `0.1.3`. `baseVersion` in `gradle.properties` is only the seed for
-snapshot builds now — nothing bumps it automatically any more.
+`v0.1.3` publishes `0.1.3`. `baseVersion` in `gradle.properties` is the snapshot seed: the
+release job advances it to the next patch after a published release so the next branch and PR
+inherit it.
 
 | Condition | Effective version | Example |
 | --- | --- | --- |
@@ -47,6 +48,8 @@ flowchart TD
   T --> C["unit-tests + e2e-tests on the tagged commit"]
   C --> R["resolve: semver shape + who pushed the tag"]
   R --> P["publish + jreleaserDeploy as the tag version"]
+  P --> B["commit: baseVersion advanced to the next patch on main"]
+  B -->|next branch and PR inherits| PR
 ```
 
 ### `snapshot` job (pull requests)
@@ -65,11 +68,16 @@ left out so PR commits do not accumulate in Central.
 2. **Author** — `gh api repos/<repo>/collaborators/<actor>/permission` must come back `write`
    or `admin`. This is the CI backstop for the tag ruleset below: a tag created by someone
    who cannot release stops here.
-3. The release job runs only when both pass, and publishes
-   `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser.
+3. **Next patch** — `major.minor.(patch + 1)` is output for the release job.
 
-No tag is created and no version is bumped by CI: the tag already exists, and the version is
-the tag.
+### `release` job (tag pushes that pass both checks)
+
+1. Publishes `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser.
+2. Commits `chore: bump baseVersion to <next patch> [skip ci]` on `main`, so new branches and
+   PRs inherit it. The step exits without a commit when `main` is already at that number.
+
+CI never creates a tag — the tag already exists and is the version. The commit only moves the
+snapshot seed.
 
 ## Protecting tag creation
 
@@ -118,14 +126,15 @@ ruleset form, not the import file.
   `MAVEN_CENTRAL_OSSRH_TOKEN`, signing key `3B36C37F3005FE8BB8B30DC26B12ADFA0BE0D092`.
 - Maven Central rejects snapshot versions, so a release must publish a clean version
   (JReleaser runs with `applyMavenCentralRules = true`), which the semver check guarantees.
-- `GITHUB_TOKEN` needs `contents: read` and `packages: write` on the release job; it no longer
-  pushes commits or tags.
+- `GITHUB_TOKEN` needs `packages: write` and `contents: write` on the release job, the second
+  for the seed bump commit. Branch protection that forbids the bot pushing to `main`, or that
+  requires every change to arrive as a pull request, fails that step.
 
 ## Notes
 
-- Re-running a tag that was already published fails at `jreleaserDeploy` — neither registry
-  accepts a duplicate version — so a release cannot be silently overwritten.
-- Major and minor lines start by choosing the number to tag; `baseVersion` is advanced by hand
-  only when you want the snapshot seed to move.
+- Re-running a published tag fails at `jreleaserDeploy` — neither registry accepts a duplicate
+  version — so a release cannot be overwritten and a failed re-run leaves the seed alone.
+- The bump is patch-only. Major and minor lines start by choosing the number to tag; the seed
+  follows on the next successful release run.
 - `artifactId` is pinned to `signify` in `publish-common.gradle`; renaming it is a publication
   change, not a version change.
