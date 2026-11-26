@@ -73,7 +73,7 @@ jobs:
   # Pull requests publish an identifiable snapshot: <base>-pr<N>-<commit>-SNAPSHOT.
   snapshot:
     name: Publish PR snapshot
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
     needs:
       - unit-tests
       - e2e-tests
