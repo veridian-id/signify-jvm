@@ -35,18 +35,23 @@ git push origin refs/tags/v0.1.3
 ```
 
 The tag points at the commit that gets published, so create it on `main` after the merge you
-want to ship. Only `vMAJOR.MINOR.PATCH` tags release: the trigger glob is `v*` (Action
-filters cannot express digit classes), and the `resolve` job re-checks the exact shape, so
+want to ship. Only `vMAJOR.MINOR.PATCH` tags release, which the `resolve` job checks, so
 `v0.1.3-rc1`, `v1`, or `version-3` run CI without publishing.
+
+The trigger is `create`, which a tag ref fires whether it was pushed over Git or created on the
+server (Releases page, `gh release create`, the `git/refs` API). `push` is left for `main` only:
+moving an existing tag is the one case `create` never sees, and a moved tag cannot republish the
+version anyway, so recreate rather than move. `create` fires for branch creation too, so the jobs
+only run for it on a `v*` tag ref.
 
 ## Pipeline
 
 ```mermaid
 flowchart TD
   PR["PR: baseVersion-prN-sha-SNAPSHOT to GitHub Packages"] --> M["merge to main: tests only, no publish"]
-  M --> T["push vMAJOR.MINOR.PATCH"]
+  M --> T["vMAJOR.MINOR.PATCH tag, created by git push or on the server"]
   T --> C["unit-tests + e2e-tests on the tagged commit"]
-  C --> R["resolve: semver shape + who pushed the tag"]
+  C --> R["resolve: semver shape + who created the tag"]
   R --> P["publish + jreleaserDeploy as the tag version"]
   P --> B["commit: baseVersion advanced to the next patch on main"]
   B -->|next branch and PR inherits| PR
@@ -61,16 +66,16 @@ flowchart TD
 Snapshots go to GitHub Packages only; the Maven Central snapshot repository is deliberately
 left out so PR commits do not accumulate in Central.
 
-### `resolve` job (tag pushes)
+### `resolve` job (tag events)
 
-1. **Semver** — `GITHUB_REF_NAME` must match `^v[0-9]+\.[0-9]+\.[0-9]+$`; otherwise nothing
-   is published and the run says so in the job summary.
+1. **Semver** — the tag name taken from `GITHUB_REF` must match
+   `^v[0-9]+\.[0-9]+\.[0-9]+$`; otherwise nothing is published and the run says so in the summary.
 2. **Author** — `gh api repos/<repo>/collaborators/<actor>/permission` must come back `write`
    or `admin`. This is the CI backstop for the tag ruleset below: a tag created by someone
    who cannot release stops here.
 3. **Next patch** — `major.minor.(patch + 1)` is output for the release job.
 
-### `release` job (tag pushes that pass both checks)
+### `release` job (tag events that pass both checks)
 
 1. Publishes `RELEASE_VERSION=<tag version>` from `build/staging-deploy` through JReleaser.
 2. Commits `chore: bump baseVersion to <next patch> [skip ci]` on `main`, so new branches and
@@ -89,7 +94,7 @@ plus the CI check above.
 | Tag ruleset (the real gate) | Blocks tag creation and deletion for everyone except the bypass list — add Admin and Maintain, or a named team. Applies to tags created through Releases too. | Settings → Rules → Rulesets → New ruleset → New tag ruleset, target `v*` |
 | Semver name pattern | Rejects tags that are not `v<major>.<minor>.<patch>` at creation time, so a bad tag never reaches CI | Same ruleset, "Restrict tag names" → must match regex `^v[0-9]+\.[0-9]+\.[0-9]+$` |
 | `main` protection | Tags should point at reviewed commits; branch protection keeps `main` itself protected. A ruleset cannot say "tags may only point at `main`", so keep the convention that release tags are created on `main` | Settings → Rules → rulesets targeting `main` |
-| CI author check | Backstop when the ruleset is bypassed, e.g. an integration that creates tags | `resolve` job, `Check who pushed the tag` |
+| CI author check | Backstop when the ruleset is bypassed, e.g. an integration that creates tags | `resolve` job, `Check who created the tag` |
 | Role reality | Read-only collaborators and outside contributors cannot push tags to this repository at all; tags pushed to a fork do not run this workflow | — |
 
 Ruleset JSON for import, equivalent to the two settings above:
